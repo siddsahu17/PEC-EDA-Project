@@ -1,4 +1,4 @@
-    prescription_id,customer_id,doctor_name,medicine_id,date,dosage
+prescription_id,customer_id,doctor_name,medicine_id,date,dosage
 PRES4000,CUST6748,Suresh Shah,MED2818,2020-11-28,0-0-1
 PRES4001,CUST2270,Arjun Kulkarni,MED2192,2021-09-16,2-0-2
 PRES4002,CUST5535,Arjun Das,MED2232,2025-03-03,1-1-1
