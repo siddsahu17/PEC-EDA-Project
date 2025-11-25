@@ -1,4 +1,7 @@
 # app.py
+import matplotlib
+matplotlib.use('Agg')  # Set non-interactive backend before importing pyplot
+
 from fastapi import FastAPI, Response, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -35,12 +38,12 @@ def load_data():
     files = {
         "customers": "Customers.csv",
         "medicine": "Medicine.csv",
-        "pharmacy": "Shops.csv",
+        "pharmacy": "PharmacyShops.csv",
         "prescriptions": "Prescriptions.csv",
         "purchases": "Purchases.csv",
         "sales_bills": "SalesBills.csv",
         "stocks": "Stocks.csv",
-        "med_type": "TypesOfMedicine.csv"
+        "med_type": "TypesofMedicine.csv"
     }
     for k, fname in files.items():
         try:
