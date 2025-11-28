@@ -1,26 +1,16 @@
-# app.py
-import matplotlib
-matplotlib.use('Agg')  # Set non-interactive backend before importing pyplot
-
-from fastapi import FastAPI, Response, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-
+from pydantic import BaseModel
 import pandas as pd
 import numpy as np
-import io
-import matplotlib.pyplot as plt
-import seaborn as sns
 import plotly.express as px
 import plotly.io as pio
-
-sns.set(style="whitegrid", palette="Set2")
-plt.rcParams["figure.figsize"] = (10,5)
+import json
+from ml_models import PharmacyML
 
 app = FastAPI(title="Pharmacy EDA Dashboard (FastAPI)")
 
-# CORS (optional)
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -31,10 +21,9 @@ app.add_middleware(
 
 DATA_DIR = "data"
 
-# Attempt to load datasets - adjust filenames if different
+# Attempt to load datasets
 def load_data():
     d = {}
-    # filenames expected from your examples
     files = {
         "customers": "Customers.csv",
         "medicine": "Medicine.csv",
@@ -49,14 +38,14 @@ def load_data():
         try:
             d[k] = pd.read_csv(f"{DATA_DIR}/{fname}")
         except Exception as e:
-            # give an empty DataFrame if file missing
             d[k] = pd.DataFrame()
             print(f"Warning: couldn't load {fname}: {e}")
     return d
 
 DATA = load_data()
+ML_SYSTEM = PharmacyML(DATA)
 
-# Helper - safe parse date column if exists
+# Helper - safe parse date column
 def ensure_date(df, col):
     if col in df.columns:
         try:
@@ -65,210 +54,265 @@ def ensure_date(df, col):
             pass
     return df
 
-# Render matplotlib/seaborn figure to PNG streaming response
-def fig_to_png_response(fig):
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", bbox_inches="tight")
-    plt.close(fig)
-    buf.seek(0)
-    return StreamingResponse(buf, media_type="image/png")
+# Helper to return Plotly JSON with Inference
+def response_with_inference(fig, inference_text):
+    return {
+        "graph": json.loads(fig.to_json()),
+        "inference": inference_text
+    }
 
-# Index page with links
-@app.get("/", response_class=HTMLResponse)
+# Pydantic Models for ML Inputs
+class LinearInput(BaseModel):
+    quantity: float
+    discount: float
+    price: float = 100.0  # Default price if not provided
+
+class LogisticInput(BaseModel):
+    final_price: float
+    payment_mode: str
+
+class TreeInput(BaseModel):
+    price: float
+    type_id: str
+
+@app.get("/")
 def index():
-    links = [
-        ("/heads", "DataFrame Heads"),
-        ("/sales_over_time", "Total Sales Over Time (line)"),
-        ("/payment_mode_status", "Payment Modes vs Status (countplot)"),
-        ("/customer_age_dist", "Customer Age Distribution (hist)"),
-        ("/purchase_cost_dist", "Purchase Cost Distribution (hist)"),
-        ("/supplier_qty", "Quantity Purchased per Supplier (bar)"),
-        ("/stock_box", "Available Stock Units per Shop (box)"),
-        ("/sales_corr_heatmap", "Sales Correlation Heatmap"),
-        ("/top_doctors", "Top 10 Doctors by Prescriptions (bar)"),
-        ("/prescription_trend", "Prescriptions Over Years (line)"),
-        ("/discount_vs_price", "Discount vs Final Price (scatter)"),
-        ("/top_meds", "Top 10 Medicines by Revenue (bar)"),
-        ("/shop_ratings_box", "Shop Ratings by Location (box)"),
-        ("/shop_ratings_hist", "Shop Ratings Distribution (hist)")
-    ]
-    html = "<h2>Pharmacy EDA Dashboard (FastAPI)</h2><ul>"
-    for href, label in links:
-        html += f'<li><a href="{href}" target="_blank">{label}</a></li>'
-    html += "</ul><p>Note: interactive Plotly charts open in a separate tab.</p>"
-    return HTMLResponse(html)
+    return {"message": "Pharmacy EDA API is running. Access endpoints for data."}
 
-# Heads route: show first rows and info as HTML
-@app.get("/heads", response_class=HTMLResponse)
+@app.get("/heads")
 def heads():
-    out = "<h2>Dataframe Heads</h2>"
+    out = {}
     for name, df in DATA.items():
-        out += f"<h3>{name} (shape: {df.shape})</h3>"
         if df.empty:
-            out += "<p><b>Not loaded / empty dataframe</b></p>"
-            continue
-        out += df.head().to_html(index=False, classes="table table-striped")
-    return HTMLResponse(out)
+            out[name] = "Empty"
+        else:
+            out[name] = df.head().to_dict(orient="records")
+    return out
 
-# 1. Sales over time (Plotly -> interactive)
-@app.get("/sales_over_time", response_class=HTMLResponse)
+# --- ML Endpoints ---
+
+@app.get("/api/ml/regression/compare")
+def compare_regression_models():
+    return ML_SYSTEM.get_regression_metrics()
+
+@app.get("/api/ml/regression/plot/{model_name}")
+def get_regression_plot(model_name: str):
+    plot = ML_SYSTEM.get_regression_plot(model_name)
+    if plot is None:
+        return {"error": "Plot not available"}
+    return plot
+
+@app.get("/api/ml/classification/metrics")
+def get_classification_metrics():
+    return ML_SYSTEM.get_classification_metrics()
+
+@app.get("/api/ml/classification/confusion_matrix")
+def get_confusion_matrix():
+    cm = ML_SYSTEM.get_confusion_matrix()
+    if cm is None:
+        return {"error": "Confusion matrix not available"}
+    return cm
+
+# Prediction Endpoints (Simplified for now, focusing on comparison)
+# We can add specific prediction endpoints if needed, but the user asked for comparison.
+
+
+# --- Visualization Endpoints ---
+
+# 1. Sales over time (Line)
+@app.get("/sales_over_time")
 def sales_over_time():
     sales = DATA.get("sales_bills", pd.DataFrame()).copy()
     if "sale_date" not in sales.columns or sales.empty:
-        return HTMLResponse("<p>sales_bills missing or no sale_date column</p>")
+        return {"error": "Data missing"}
     sales = ensure_date(sales, "sale_date")
     sales_over_time = sales.groupby("sale_date", dropna=True)["final_price"].sum().reset_index()
     fig = px.line(sales_over_time, x="sale_date", y="final_price", title="Total Sales Over Time")
-    html = pio.to_html(fig, full_html=True, include_plotlyjs="cdn")
-    return HTMLResponse(html)
+    
+    total_sales = sales_over_time["final_price"].sum()
+    peak_day = sales_over_time.loc[sales_over_time["final_price"].idxmax()]["sale_date"].strftime('%Y-%m-%d')
+    inference = f"Total sales recorded are {total_sales:,.2f}. The highest sales occurred on {peak_day}, indicating a potential peak in demand or a specific event."
+    
+    return response_with_inference(fig, inference)
 
-# 2. Payment mode vs status (matplotlib/seaborn -> PNG)
+# 2. Payment mode vs status (Bar)
 @app.get("/payment_mode_status")
 def payment_mode_status():
     sales = DATA.get("sales_bills", pd.DataFrame())
-    if sales.empty or ("payment_mode" not in sales.columns):
-        return HTMLResponse("<p>sales_bills missing or payment_mode column not found</p>")
-    fig, ax = plt.subplots(figsize=(8,5))
-    try:
-        sns.countplot(data=sales, x="payment_mode", hue="status", palette="Set2", ax=ax)
-        ax.set_title("Payment Modes vs Status")
-    except Exception as e:
-        plt.close(fig)
-        return HTMLResponse(f"<p>Error plotting: {e}</p>")
-    return fig_to_png_response(fig)
+    if sales.empty or "payment_mode" not in sales.columns:
+        return {"error": "Data missing"}
+    counts = sales.groupby(["payment_mode", "status"]).size().reset_index(name="count")
+    fig = px.bar(counts, x="payment_mode", y="count", color="status", title="Payment Modes vs Status", barmode="group")
+    
+    top_mode = counts.groupby("payment_mode")["count"].sum().idxmax()
+    inference = f"The most popular payment mode is {top_mode}. Analyzing the status distribution helps identify if certain payment methods have higher cancellation rates."
+    
+    return response_with_inference(fig, inference)
 
-# 3. Customer age distribution (matplotlib -> PNG)
+# 3. Customer age distribution (Histogram)
 @app.get("/customer_age_dist")
 def customer_age_dist():
     cust = DATA.get("customers", pd.DataFrame())
     if cust.empty or "age" not in cust.columns:
-        return HTMLResponse("<p>customers missing or age column not found</p>")
-    fig, ax = plt.subplots(figsize=(8,4))
-    sns.histplot(cust["age"].dropna(), bins=20, kde=True, color="skyblue", ax=ax)
-    ax.set_title("Customer Age Distribution")
-    return fig_to_png_response(fig)
+        return {"error": "Data missing"}
+    fig = px.histogram(cust, x="age", nbins=20, title="Customer Age Distribution", color_discrete_sequence=["skyblue"])
+    
+    avg_age = cust["age"].mean()
+    inference = f"The average customer age is {avg_age:.1f} years. The distribution highlights the primary demographic group, aiding in targeted marketing."
+    
+    return response_with_inference(fig, inference)
 
-# 4. Purchase cost distribution (matplotlib -> PNG)
+# 4. Purchase cost distribution (Histogram)
 @app.get("/purchase_cost_dist")
 def purchase_cost_dist():
     purchases = DATA.get("purchases", pd.DataFrame())
     if purchases.empty or "cost_price" not in purchases.columns:
-        return HTMLResponse("<p>purchases missing or cost_price column not found</p>")
-    fig, ax = plt.subplots(figsize=(8,4))
-    sns.histplot(purchases["cost_price"].dropna(), bins=20, kde=True, color="purple", ax=ax)
-    ax.set_title("Distribution of Purchase Cost")
-    return fig_to_png_response(fig)
+        return {"error": "Data missing"}
+    fig = px.histogram(purchases, x="cost_price", nbins=20, title="Distribution of Purchase Cost", color_discrete_sequence=["purple"])
+    
+    inference = "This histogram shows the spread of purchase costs. Skewness towards lower values suggests frequent small-scale purchases."
+    return response_with_inference(fig, inference)
 
-# 5. Quantity Purchased per Supplier (Plotly)
-@app.get("/supplier_qty", response_class=HTMLResponse)
+# 5. Quantity Purchased per Supplier (Bar)
+@app.get("/supplier_qty")
 def supplier_qty():
     purchases = DATA.get("purchases", pd.DataFrame())
     if purchases.empty or "supplier_name" not in purchases.columns:
-        return HTMLResponse("<p>purchases missing or supplier_name column not found</p>")
+        return {"error": "Data missing"}
     sup_qty = purchases.groupby("supplier_name", dropna=True)["quantity"].sum().reset_index()
     sup_qty = sup_qty.sort_values("quantity", ascending=False)
     fig = px.bar(sup_qty, x="supplier_name", y="quantity", title="Quantity Purchased per Supplier")
-    return HTMLResponse(pio.to_html(fig, full_html=True, include_plotlyjs="cdn"))
+    
+    top_sup = sup_qty.iloc[0]["supplier_name"]
+    inference = f"{top_sup} is the leading supplier by quantity. Reliance on a single supplier for bulk stock might pose a supply chain risk."
+    return response_with_inference(fig, inference)
 
-# 6. Available Stock Units per Shop (Plotly box)
-@app.get("/stock_box", response_class=HTMLResponse)
+# 6. Available Stock Units per Shop (Box)
+@app.get("/stock_box")
 def stock_box():
     stocks = DATA.get("stocks", pd.DataFrame())
-    if stocks.empty or ("shop_id" not in stocks.columns or "available_units" not in stocks.columns):
-        return HTMLResponse("<p>stocks missing or required columns not found</p>")
+    if stocks.empty or "shop_id" not in stocks.columns:
+        return {"error": "Data missing"}
     fig = px.box(stocks, x="shop_id", y="available_units", title="Available Stock Units per Shop")
-    return HTMLResponse(pio.to_html(fig, full_html=True, include_plotlyjs="cdn"))
+    
+    inference = "The box plot reveals variability in stock levels across shops. Outliers indicate shops with significantly higher or lower inventory than average."
+    return response_with_inference(fig, inference)
 
-# 7. Sales correlation heatmap (matplotlib -> PNG)
+# 7. Sales correlation heatmap (Heatmap)
 @app.get("/sales_corr_heatmap")
 def sales_corr_heatmap():
     sales = DATA.get("sales_bills", pd.DataFrame())
     cols = ["quantity", "discount", "final_price"]
     if sales.empty or not all(c in sales.columns for c in cols):
-        return HTMLResponse("<p>sales_bills missing or required columns not found</p>")
+        return {"error": "Data missing"}
     corr = sales[cols].corr()
-    fig, ax = plt.subplots(figsize=(6,5))
-    sns.heatmap(corr, annot=True, cmap="coolwarm", ax=ax)
-    ax.set_title("Correlation between Sales Variables")
-    return fig_to_png_response(fig)
+    fig = px.imshow(corr, text_auto=True, title="Correlation between Sales Variables", color_continuous_scale="RdBu_r")
+    
+    inference = "The heatmap displays relationships between sales variables. A strong correlation between Quantity and Final Price is expected."
+    return response_with_inference(fig, inference)
 
-# 8. Top doctors by prescriptions (Plotly bar)
-@app.get("/top_doctors", response_class=HTMLResponse)
+# 8. Top doctors by prescriptions (Bar)
+@app.get("/top_doctors")
 def top_doctors():
     pres = DATA.get("prescriptions", pd.DataFrame())
     if pres.empty or "doctor_name" not in pres.columns:
-        return HTMLResponse("<p>prescriptions missing or doctor_name not found</p>")
+        return {"error": "Data missing"}
     doc_count = pres["doctor_name"].value_counts().head(10).reset_index()
     doc_count.columns = ["doctor_name", "count"]
     fig = px.bar(doc_count, x="doctor_name", y="count", title="Top 10 Doctors by Prescriptions")
-    return HTMLResponse(pio.to_html(fig, full_html=True, include_plotlyjs="cdn"))
+    
+    top_doc = doc_count.iloc[0]["doctor_name"]
+    inference = f"{top_doc} prescribes the most medications. Building a relationship with top prescribers could be beneficial."
+    return response_with_inference(fig, inference)
 
-# 9. Prescription trends by year (matplotlib -> PNG)
+# 9. Prescription trends by year (Line)
 @app.get("/prescription_trend")
 def prescription_trend():
     pres = DATA.get("prescriptions", pd.DataFrame()).copy()
     if pres.empty or "date" not in pres.columns:
-        return HTMLResponse("<p>prescriptions missing or date column not found</p>")
+        return {"error": "Data missing"}
     pres = ensure_date(pres, "date")
     presc_trend = pres.groupby(pres["date"].dt.year)["prescription_id"].count().reset_index()
     presc_trend.columns = ["year", "count"]
-    fig, ax = plt.subplots(figsize=(8,4))
-    sns.lineplot(data=presc_trend, x="year", y="count", marker="o", ax=ax)
-    ax.set_title("Prescriptions Over the Years")
-    ax.set_xlabel("Year")
-    ax.set_ylabel("Count")
-    return fig_to_png_response(fig)
+    fig = px.line(presc_trend, x="year", y="count", markers=True, title="Prescriptions Over the Years")
+    
+    inference = "The trend line shows the volume of prescriptions over time. An upward trend indicates business growth or increased market reach."
+    return response_with_inference(fig, inference)
 
-# 10. Discount vs Final Price (Plotly scatter)
-@app.get("/discount_vs_price", response_class=HTMLResponse)
+# 10. Discount vs Final Price (Scatter)
+@app.get("/discount_vs_price")
 def discount_vs_price():
     sales = DATA.get("sales_bills", pd.DataFrame())
-    if sales.empty or not all(c in sales.columns for c in ["discount", "final_price"]):
-        return HTMLResponse("<p>sales_bills missing or required columns not found</p>")
-    fig = px.scatter(sales, x="discount", y="final_price", color="payment_mode" if "payment_mode" in sales.columns else None,
+    if sales.empty:
+        return {"error": "Data missing"}
+    fig = px.scatter(sales, x="discount", y="final_price", 
+                     color="payment_mode" if "payment_mode" in sales.columns else None,
                      size="quantity" if "quantity" in sales.columns else None,
                      hover_data=["status"] if "status" in sales.columns else None,
                      title="Discount vs Final Price by Payment Mode")
-    return HTMLResponse(pio.to_html(fig, full_html=True, include_plotlyjs="cdn"))
+    
+    inference = "This scatter plot explores if higher discounts correlate with higher final prices (bulk buys). Color coding reveals payment preferences."
+    return response_with_inference(fig, inference)
 
-# 11. Top 10 medicines by revenue (Plotly bar)
-@app.get("/top_meds", response_class=HTMLResponse)
+# 11. Top 10 medicines by revenue (Bar)
+@app.get("/top_meds")
 def top_meds():
     sales = DATA.get("sales_bills", pd.DataFrame())
     meds = DATA.get("medicine", pd.DataFrame())
-    if sales.empty or meds.empty or "medicine_id" not in sales.columns:
-        return HTMLResponse("<p>sales_bills or medicine missing or medicine_id not found</p>")
+    if sales.empty or meds.empty:
+        return {"error": "Data missing"}
     top = sales.groupby("medicine_id", dropna=True)["final_price"].sum().nlargest(10).reset_index()
     top = top.merge(meds[["medicine_id", "medicine_name"]], on="medicine_id", how="left")
     fig = px.bar(top, x="medicine_name", y="final_price", title="Top 10 Medicines by Revenue", color="final_price")
-    return HTMLResponse(pio.to_html(fig, full_html=True, include_plotlyjs="cdn"))
+    
+    top_med = top.iloc[0]["medicine_name"]
+    inference = f"{top_med} generates the highest revenue. Ensuring consistent stock of this item is critical for profitability."
+    return response_with_inference(fig, inference)
 
-# 12. Shop ratings by location (Plotly box)
-@app.get("/shop_ratings_box", response_class=HTMLResponse)
+# 12. Shop ratings by location (Box)
+@app.get("/shop_ratings_box")
 def shop_ratings_box():
-    shops = DATA.get("pharmacy", DATA.get("pharmacy", pd.DataFrame()))
-    if shops.empty or not all(c in shops.columns for c in ["location", "rating"]):
-        return HTMLResponse("<p>shops missing or required columns not found</p>")
+    shops = DATA.get("pharmacy", pd.DataFrame())
+    if shops.empty:
+        return {"error": "Data missing"}
     fig = px.box(shops, x="location", y="rating", color="location", title="Shop Ratings by Location")
-    return HTMLResponse(pio.to_html(fig, full_html=True, include_plotlyjs="cdn"))
+    
+    inference = "Ratings vary by location. Locations with lower median ratings may require operational improvements or staff training."
+    return response_with_inference(fig, inference)
 
-# 13. Shop ratings histogram (matplotlib -> PNG)
+# 13. Shop ratings histogram (Histogram)
 @app.get("/shop_ratings_hist")
 def shop_ratings_hist():
     shops = DATA.get("pharmacy", pd.DataFrame())
-    if shops.empty or "rating" not in shops.columns:
-        return HTMLResponse("<p>shops missing or rating column not found</p>")
-    fig, ax = plt.subplots(figsize=(8,4))
-    sns.histplot(shops["rating"].dropna(), bins=10, kde=True, color="orange", ax=ax)
-    ax.set_title("Shop Ratings Distribution")
-    return fig_to_png_response(fig)
+    if shops.empty:
+        return {"error": "Data missing"}
+    fig = px.histogram(shops, x="rating", nbins=10, title="Shop Ratings Distribution", color_discrete_sequence=["orange"])
+    
+    inference = "The distribution of ratings gives an overview of customer satisfaction. A left-skewed distribution would indicate mostly positive feedback."
+    return response_with_inference(fig, inference)
 
-# fallback health
+@app.get("/api/data/{dataset}")
+def get_dataset(dataset: str):
+    if dataset not in DATA:
+        return {"error": "Dataset not found"}
+    df = DATA[dataset]
+    return df.to_dict(orient="records")
+
+@app.get("/api/summary")
+def get_summary():
+    summary = {}
+    for name, df in DATA.items():
+        summary[name] = {
+            "shape": df.shape,
+            "columns": list(df.columns),
+            "empty": df.empty
+        }
+    return summary
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
-# If you want to run with `python app.py` (for dev)
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("app:app", host="127.0.0.1", port=8000, reload=True)
