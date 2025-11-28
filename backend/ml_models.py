@@ -79,10 +79,18 @@ class PharmacyML:
         numeric_features = X.select_dtypes(include=["int64", "float64"]).columns.tolist()
         categorical_features = X.select_dtypes(include=["object"]).columns.tolist()
 
+        from sklearn.impute import SimpleImputer
+
         preprocessor = ColumnTransformer(
             transformers=[
-                ("num", StandardScaler(), numeric_features),
-                ("cat", OneHotEncoder(handle_unknown="ignore"), categorical_features),
+                ("num", Pipeline(steps=[
+                    ("imputer", SimpleImputer(strategy="median")),
+                    ("scaler", StandardScaler())
+                ]), numeric_features),
+                ("cat", Pipeline(steps=[
+                    ("imputer", SimpleImputer(strategy="constant", fill_value="missing")),
+                    ("encoder", OneHotEncoder(handle_unknown="ignore"))
+                ]), categorical_features),
             ]
         )
 
@@ -132,8 +140,15 @@ class PharmacyML:
 
                 # Generate Plot Data (Actual vs Predicted)
                 plot_df = pd.DataFrame({"Actual": y_test, "Predicted": y_pred}).sample(min(100, len(y_test)))
+                # Check if statsmodels is installed for trendline
+                try:
+                    import statsmodels
+                    trendline = "ols"
+                except ImportError:
+                    trendline = None
+                
                 fig = px.scatter(plot_df, x="Actual", y="Predicted", title=f"{name}: Actual vs Predicted", 
-                                 trendline="ols", labels={"Actual": "Actual Price", "Predicted": "Predicted Price"})
+                                 trendline=trendline, labels={"Actual": "Actual Price", "Predicted": "Predicted Price"})
                 self.regression_plots[name] = json.loads(fig.to_json())
                 
             except Exception as e:
@@ -154,10 +169,18 @@ class PharmacyML:
             numeric_features = ["final_price", "quantity", "discount"]
             categorical_features = ["payment_mode"]
 
+            from sklearn.impute import SimpleImputer
+
             preprocessor = ColumnTransformer(
                 transformers=[
-                    ("num", StandardScaler(), numeric_features),
-                    ("cat", OneHotEncoder(handle_unknown="ignore"), categorical_features),
+                    ("num", Pipeline(steps=[
+                        ("imputer", SimpleImputer(strategy="median")),
+                        ("scaler", StandardScaler())
+                    ]), numeric_features),
+                    ("cat", Pipeline(steps=[
+                        ("imputer", SimpleImputer(strategy="constant", fill_value="missing")),
+                        ("encoder", OneHotEncoder(handle_unknown="ignore"))
+                    ]), categorical_features),
                 ]
             )
 
