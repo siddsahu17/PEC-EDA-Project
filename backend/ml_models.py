@@ -39,13 +39,10 @@ class PharmacyML:
         # Merge Sales + Medicine
         df = sales.merge(meds, on="medicine_id", how="left")
         
-        # Merge + Customers (assuming customer_id exists in sales, if not we skip customer features for now)
-        # Checking if customer_id is in sales
+        # Merge + Customers
         if "customer_id" in df.columns:
              df = df.merge(cust, on="customer_id", how="left")
         
-        # Select Features and Target
-        # We need to handle potential missing columns if merge failed or cols don't exist
         required_cols = ["final_price", "quantity", "discount", "price", "payment_mode"]
         if not all(col in df.columns for col in required_cols):
             return None
@@ -53,8 +50,13 @@ class PharmacyML:
         # Drop NaNs
         df = df.dropna(subset=required_cols)
         
+        # Feature Engineering: Interaction Term for Linear Models
+        # final_price ~ quantity * price * (1 - discount/100)
+        # Linear Regression needs 'quantity * price' as a feature to model this well.
+        df["expected_amount"] = df["quantity"] * df["price"]
+        
         # Define Features
-        features = ["quantity", "discount", "price", "payment_mode"]
+        features = ["quantity", "discount", "price", "expected_amount", "payment_mode"]
         if "category" in df.columns: features.append("category")
         if "age" in df.columns: features.append("age")
         if "gender" in df.columns: features.append("gender")
@@ -85,10 +87,7 @@ class PharmacyML:
         )
 
         regressors = {
-            "Linear Regression": LinearRegression(),
-            "Decision Tree": DecisionTreeRegressor(max_depth=10, random_state=42),
-            "Random Forest": RandomForestRegressor(n_estimators=50, random_state=42),
-            "Gradient Boosting": GradientBoostingRegressor(n_estimators=50, random_state=42)
+            "Random Forest": RandomForestRegressor(n_estimators=200, max_depth=15, random_state=42)
         }
 
         for name, model in regressors.items():
@@ -112,8 +111,26 @@ class PharmacyML:
                     "RMSE": round(rmse, 2)
                 }
                 
+                # Generate Binned Confusion Matrix for Regression
+                try:
+                    labels = ["Low", "Medium", "High"]
+                    # robust binning using qcut on the training set target to define edges
+                    # We use the entire y distribution to define "global" low/med/high for consistency
+                    quantiles = y.quantile([0.33, 0.66]).values
+                    bins = [-np.inf, quantiles[0], quantiles[1], np.inf]
+                    
+                    def bin_values(vals):
+                        return np.digitize(vals, bins=bins) - 1
+                    
+                    y_test_binned = bin_values(y_test)
+                    y_pred_binned = bin_values(y_pred)
+                    
+                    cm = confusion_matrix(y_test_binned, y_pred_binned)
+                    self.confusion_matrices[name] = {"matrix": cm.tolist(), "labels": labels}
+                except Exception as e:
+                    print(f"Error generating regression CM for {name}: {e}")
+
                 # Generate Plot Data (Actual vs Predicted)
-                # We'll store a sample to avoid huge payloads
                 plot_df = pd.DataFrame({"Actual": y_test, "Predicted": y_pred}).sample(min(100, len(y_test)))
                 fig = px.scatter(plot_df, x="Actual", y="Predicted", title=f"{name}: Actual vs Predicted", 
                                  trendline="ols", labels={"Actual": "Actual Price", "Predicted": "Predicted Price"})
@@ -171,8 +188,8 @@ class PharmacyML:
     def get_classification_metrics(self):
         return self.metrics.get("Status Classifier", {})
 
-    def get_confusion_matrix(self):
-        return self.confusion_matrices.get("Status Classifier", None)
+    def get_confusion_matrix(self, model_name="Status Classifier"):
+        return self.confusion_matrices.get(model_name, None)
 
     # Prediction methods (simplified for demo)
     def predict_price(self, model_name, input_data):

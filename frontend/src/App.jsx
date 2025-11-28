@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import PlotlyGraph from './components/PlotlyGraph';
 import MLDashboard from './components/MLDashboard';
+import EDADashboard from './components/EDADashboard';
 
 function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
@@ -41,9 +42,15 @@ function App() {
         >
           ML Models
         </button>
+        <button 
+          className={`tab-btn ${activeTab === 'eda' ? 'active' : ''}`} 
+          onClick={() => setActiveTab('eda')}
+        >
+          EDA Analysis
+        </button>
       </nav>
 
-      {activeTab === 'dashboard' ? (
+      {activeTab === 'dashboard' && (
         <main className="dashboard-grid">
           {charts.map((chart, index) => (
             <PlotlyGraph 
@@ -53,9 +60,17 @@ function App() {
             />
           ))}
         </main>
-      ) : (
+      )}
+
+      {activeTab === 'ml' && (
         <section style={{ padding: '0 24px 48px', maxWidth: '1600px', margin: '0 auto' }}>
           <MLDashboard />
+        </section>
+      )}
+
+      {activeTab === 'eda' && (
+        <section style={{ padding: '0 24px 48px', maxWidth: '1600px', margin: '0 auto' }}>
+          <EDADashboard />
         </section>
       )}
     </div>

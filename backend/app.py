@@ -106,11 +106,17 @@ def get_regression_plot(model_name: str):
 def get_classification_metrics():
     return ML_SYSTEM.get_classification_metrics()
 
-@app.get("/api/ml/classification/confusion_matrix")
-def get_confusion_matrix():
-    cm = ML_SYSTEM.get_confusion_matrix()
+@app.get("/api/ml/confusion_matrix/{model_name}")
+def get_model_confusion_matrix(model_name: str):
+    # Support both regression (binned) and classification CMs
+    cm = ML_SYSTEM.get_confusion_matrix(model_name)
     if cm is None:
-        return {"error": "Confusion matrix not available"}
+        # Try fetching from classification dict if not found (backward compatibility)
+        if model_name == "Status Classifier":
+             cm = ML_SYSTEM.get_confusion_matrix("Status Classifier")
+    
+    if cm is None:
+        return {"error": f"Confusion matrix not available for {model_name}"}
     return cm
 
 # Prediction Endpoints (Simplified for now, focusing on comparison)

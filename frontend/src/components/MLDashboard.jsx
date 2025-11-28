@@ -6,14 +6,23 @@ const MLDashboard = () => {
   const [regMetrics, setRegMetrics] = useState(null);
   const [classMetrics, setClassMetrics] = useState(null);
   const [confusionMatrix, setConfusionMatrix] = useState(null);
-  const [selectedModel, setSelectedModel] = useState("Linear Regression");
+  const [selectedModel, setSelectedModel] = useState("Random Forest");
   const [regPlot, setRegPlot] = useState(null);
   const [loadingPlot, setLoadingPlot] = useState(false);
 
   useEffect(() => {
     // Fetch Regression Metrics
     axios.get('http://127.0.0.1:8000/api/ml/regression/compare')
-      .then(res => setRegMetrics(res.data))
+      .then(res => {
+        setRegMetrics(res.data);
+        // Set default model to the first available one if Linear Regression is missing
+        if (res.data && Object.keys(res.data).length > 0) {
+          const availableModels = Object.keys(res.data);
+          if (!availableModels.includes("Linear Regression")) {
+            setSelectedModel(availableModels[0]);
+          }
+        }
+      })
       .catch(err => console.error("Error fetching regression metrics", err));
 
     // Fetch Classification Metrics
@@ -30,20 +39,38 @@ const MLDashboard = () => {
   useEffect(() => {
     if (selectedModel) {
       setLoadingPlot(true);
+      setRegPlot(null);
+      setConfusionMatrix(null); // Reset CM
+      
+      // Fetch Plot
       axios.get(`http://127.0.0.1:8000/api/ml/regression/plot/${selectedModel}`)
-        .then(res => setRegPlot(res.data))
+        .then(res => {
+          if (res.data && res.data.error) {
+            console.warn(res.data.error);
+            setRegPlot(null);
+          } else {
+            setRegPlot(res.data);
+          }
+        })
         .catch(err => console.error("Error fetching plot", err))
         .finally(() => setLoadingPlot(false));
+
+      // Fetch Confusion Matrix (Binned for Regression)
+      axios.get(`http://127.0.0.1:8000/api/ml/confusion_matrix/${selectedModel}`)
+        .then(res => {
+            if (!res.data.error) setConfusionMatrix(res.data);
+        })
+        .catch(err => console.error("Error fetching regression CM", err));
     }
   }, [selectedModel]);
 
-  const renderConfusionMatrix = () => {
-    if (!confusionMatrix || !confusionMatrix.matrix) return null;
-    const { matrix, labels } = confusionMatrix;
+  const renderConfusionMatrix = (cmData, title) => {
+    if (!cmData || !cmData.matrix) return null;
+    const { matrix, labels } = cmData;
     
     return (
       <div style={{ marginTop: '1rem', textAlign: 'center' }}>
-        <h4 style={{ color: '#94a3b8', marginBottom: '10px' }}>Confusion Matrix (Status Prediction)</h4>
+        <h4 style={{ color: '#94a3b8', marginBottom: '10px' }}>{title}</h4>
         <div style={{ display: 'inline-grid', gridTemplateColumns: `auto repeat(${labels.length}, 1fr)`, gap: '5px' }}>
           {/* Header Row */}
           <div></div>
@@ -68,6 +95,16 @@ const MLDashboard = () => {
       </div>
     );
   };
+
+  // State for Classification CM separately
+  const [classCM, setClassCM] = useState(null);
+
+  useEffect(() => {
+     // Fetch Classification CM
+     axios.get('http://127.0.0.1:8000/api/ml/confusion_matrix/Status Classifier')
+      .then(res => setClassCM(res.data))
+      .catch(err => console.error("Error fetching class CM", err));
+  }, []);
 
   return (
     <div className="ml-dashboard">
@@ -103,51 +140,46 @@ const MLDashboard = () => {
           </table>
         </div>
 
-        {/* Regression Plots */}
+        {/* Regression Plots & CM */}
         <div>
-          <div style={{ display: 'flex', gap: '10px', marginBottom: '20px', flexWrap: 'wrap' }}>
-            {["Linear Regression", "Decision Tree", "Random Forest", "Gradient Boosting"].map(m => (
-              <button 
-                key={m}
-                onClick={() => setSelectedModel(m)}
-                style={{
-                  padding: '8px 16px',
-                  borderRadius: '20px',
-                  border: '1px solid #38bdf8',
-                  background: selectedModel === m ? '#38bdf8' : 'transparent',
-                  color: selectedModel === m ? '#000' : '#38bdf8',
-                  cursor: 'pointer',
-                  transition: 'all 0.3s'
-                }}
-              >
-                {m}
-              </button>
-            ))}
+          {/* Model Title */}
+          <div style={{ marginBottom: '20px', textAlign: 'center' }}>
+             <h4 style={{ color: '#38bdf8', fontSize: '1.2rem' }}>Model: Random Forest Regressor</h4>
           </div>
           
-          <div style={{ minHeight: '400px', background: 'rgba(0,0,0,0.2)', borderRadius: '8px', padding: '10px' }}>
-            {loadingPlot ? (
-              <div style={{ padding: '40px', textAlign: 'center' }}>Loading Plot...</div>
-            ) : regPlot ? (
-              <Plot
-                data={regPlot.data}
-                layout={{
-                  ...regPlot.layout,
-                  paper_bgcolor: 'rgba(0,0,0,0)',
-                  plot_bgcolor: 'rgba(0,0,0,0)',
-                  font: { color: '#e2e8f0' },
-                  title: { text: `${selectedModel}: Actual vs Predicted`, font: { color: '#e2e8f0', size: 18 } },
-                  xaxis: { ...regPlot.layout.xaxis, gridcolor: '#334155', title: 'Actual Price' },
-                  yaxis: { ...regPlot.layout.yaxis, gridcolor: '#334155', title: 'Predicted Price' },
-                  autosize: true
-                }}
-                useResizeHandler={true}
-                style={{ width: "100%", height: "400px" }}
-                config={{ responsive: true, displayModeBar: false }}
-              />
-            ) : (
-              <div style={{ padding: '40px', textAlign: 'center' }}>Select a model to view plot</div>
-            )}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(400px, 1fr))', gap: '20px' }}>
+            {/* Plot */}
+            <div style={{ minHeight: '400px', background: 'rgba(0,0,0,0.2)', borderRadius: '8px', padding: '10px' }}>
+                {loadingPlot ? (
+                <div style={{ padding: '40px', textAlign: 'center' }}>Loading Plot...</div>
+                ) : regPlot && regPlot.data ? (
+                <Plot
+                    data={regPlot.data}
+                    layout={{
+                    ...regPlot.layout,
+                    paper_bgcolor: 'rgba(0,0,0,0)',
+                    plot_bgcolor: 'rgba(0,0,0,0)',
+                    font: { color: '#e2e8f0' },
+                    title: { text: `${selectedModel}: Actual vs Predicted`, font: { color: '#e2e8f0', size: 18 } },
+                    xaxis: { ...regPlot.layout.xaxis, gridcolor: '#334155', title: 'Actual Price' },
+                    yaxis: { ...regPlot.layout.yaxis, gridcolor: '#334155', title: 'Predicted Price' },
+                    autosize: true
+                    }}
+                    useResizeHandler={true}
+                    style={{ width: "100%", height: "400px" }}
+                    config={{ responsive: true, displayModeBar: false }}
+                />
+                ) : (
+                <div style={{ padding: '40px', textAlign: 'center' }}>
+                    {selectedModel ? "Plot not available for this model" : "Select a model to view plot"}
+                </div>
+                )}
+            </div>
+
+            {/* Regression CM */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.2)', borderRadius: '8px', padding: '20px' }}>
+                {confusionMatrix ? renderConfusionMatrix(confusionMatrix, `Confusion Matrix (${selectedModel})`) : <p>Loading CM...</p>}
+            </div>
           </div>
         </div>
       </div>
@@ -166,14 +198,11 @@ const MLDashboard = () => {
                 <p><strong>Accuracy:</strong> <span style={{ color: '#4ade80' }}>{classMetrics.Accuracy}</span></p>
               </div>
             ) : <p>Loading...</p>}
-            <div style={{ marginTop: '20px', fontSize: '0.9rem', color: '#cbd5e1', fontStyle: 'italic' }}>
-              Note: Confusion Matrix is applicable here as this is a classification task (predicting categorical Status).
-            </div>
           </div>
 
-          {/* Confusion Matrix */}
+          {/* Classification CM */}
           <div style={{ flex: '1', minWidth: '300px', display: 'flex', justifyContent: 'center' }}>
-            {renderConfusionMatrix()}
+            {renderConfusionMatrix(classCM, "Confusion Matrix (Status)")}
           </div>
         </div>
       </div>
